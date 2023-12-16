@@ -4,7 +4,7 @@ const path = require('path');
 const process = require('process');
 const {authenticate} = require('@google-cloud/local-auth');
 const {google} = require('googleapis');
-
+require('dotenv').config()
 
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly'];
 const TOKEN_PATH = path.join(process.cwd(), 'token.json');
@@ -34,10 +34,6 @@ async function saveCredentials(client) {
   await fs.writeFile(TOKEN_PATH, payload);
 }
 
-/**
- * Load or request or authorization to call APIs.
- *
- */
 async function authorize() {
   let client = await loadSavedCredentialsIfExist();
   if (client) {
@@ -53,55 +49,64 @@ async function authorize() {
   return client;
 }
 
-/**
- * Prints the names and majors of students in a sample spreadsheet:
- * @see https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit
- * @param {google.auth.OAuth2} auth The authenticated Google OAuth client.
- */
 async function billStudents(auth) {
   const sheets = google.sheets({version: 'v4', auth});
   const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: '1aXNn-zohLeRNFEJz-mKon6a6gQ7ahKUcLyRr4RcUleM',
-    range: 'Billing!A2:N2',
+    spreadsheetId: process.env.SPREADSHEET,
+    range: 'Billing!A2:N4',
   });
   const rows = res.data.values;
   if (!rows || rows.length === 0) {
     console.log('No data found.');
     return;
   }
-//   console.log('Student Name, Total Fees:');
   var arr = [];
-  rows.forEach(async (row) => {
-    // Print columns A and E, which correspond to indices 0 and 4.
-    try{
-        if(row[13] != null)
+
+
+  for (const row of rows) {
+    await backoff(row, 0);
+  };
+}
+
+async function backoff(row, exponent)
+{
+  if(exponent <= 10)
+  {
+    setTimeout(async () => {
+      try{
+        if(row[13] != null && parseInt(row[4].substring(1,row[4].length)) > 0)
         {
-            console.log(`Invoicing ${row[1]} at email ${row[13]} for amount ${row[4].substring(1,row[4].length)} with fees ${row[5].substring(1,row[5].length)}`);
-            await makeAndSendInvoice(row[1], row[13], row[4].substring(1,row[4].length), row[5].substring(1,row[5].length));
-            stream.write(`Successfully Invoiced ${row[1]} at email ${row[13]} for amount ${row[4].substring(1,row[4].length)} with fees ${row[5].substring(1,row[5].length)}` + '\n');
+          await makeAndSendInvoice(row[1], row[13], row[4].substring(1,row[4].length), row[5].substring(1,row[5].length));
+          stream.write(`Successfully Invoiced ${row[1]} at email ${row[13]} for amount ${row[4].substring(1,row[4].length)} with fees ${row[5].substring(1,row[5].length)}` + '\n');
+        }
+        else if(parseInt(row[4].substring(1,row[4].length)) == 0)
+        {
+          console.log(`${row[1]} was skipped because the amount was 0`);
+          stream.write(`${row[1]} was skipped because the amount was 0` + "\n");
         }
         else
         {
-            console.log(`${row[1]} was skipped because they didn't have an email`);
-            stream.write(`${row[1]} was skipped because they didn't have an email` + "\n");
+          console.log(`${row[1]} was skipped because they didn't have an email`);
+          stream.write(`${row[1]} was skipped because they didn't have an email` + "\n");
         }
-    }
-    catch(error){
-        console.log(`There was a problem invoicing ${row[1]}`);
-        return;
-    }
-    // console.log(`${row[1]} ${row[4]} ${row[5]} ${row[13]} ` + (row[13] == null));
-  });
-
-  stream.end();
+      }
+      catch(error){
+        backoff(row, exponent + 1);
+        console.log(`Retrying invoicing ${row[1]}`);
+      }
+    }, Math.pow(2, exponent) + Math.random() * 1000)
+  }
+  else
+  {
+    console.log(`There was a problem invoicing ${row[1]}. Aborting the invoice`);
+    stream.write(`There was a problem invoicing ${row[1]}. Aborting the invoice`);
+  }
 }
-
-
 
 
 const axios = require('axios');
 
-const bearerToken = "A21AALttYAXmMW8wQCD02kz-uRgLly99FACQ71j9SkfSxdWF0VFwiCRHSccgYDGSmX4joD9mWolQPTPqW6OBA5gRnEJeUT7uQ";
+const bearerToken = process.env.BEARER;
 
 const date = new Date();
 let day = date.getDate();
@@ -114,24 +119,24 @@ var invoiceTemplate = JSON.stringify(
         "detail": {
           "invoice_date": "2023-08-09",
           "currency_code": "USD",
-          "note": "Please take care of the invoice as soon as possible to avoid any late fee applied by our external accounting firm after two weeks . Thanks for your help on this. - SMC Solutions Inc.",
+          "note": "Please take care of the invoice as soon as possible to avoid any late fee applied by our external accounting firm after a week. Thanks for your help on this. - SMC Solutions Inc.",
           "payment_term": {
             "term_type": "DUE_ON_DATE_SPECIFIED",
             "due_date": "2023-08-05"
           }
         },
         "invoicer": {
-            "business_name":"SMC Solutions",
+            "business_name":"SMC Solutions Inc.",
           "name": {
-            "given_name": "Chandan",
-            "surname": "Maiti"
+            "given_name": process.env.FIRSTNAME,
+            "surname": process.env.LASTNAME
           },
-          "email_address": "sb-m7347z26977371@business.example.com",
-          "logo_url":"https://i.imgur.com/ehD8G1y.jpg",
+          "email_address": process.env.EMAIL,
+          "logo_url":process.env.LOGO,
           "phones": [
             {
               "country_code": "001",
-              "national_number": "4089212542",
+              "national_number": process.env.PHONE,
               "phone_type": "MOBILE"
             }
           ],
@@ -176,12 +181,12 @@ const config = {
 async function makeInvoice(name, address, total, fees){
     var invoice = JSON.parse(invoiceTemplate);
     invoice.primary_recipients[0].billing_info.name.given_name=name;
-    invoice.primary_recipients[0].email_address = address;
+    invoice.primary_recipients[0].billing_info.email_address = address;
     invoice.items[0].unit_amount.value = total;
     invoice.items[1].unit_amount.value = fees;
     invoice = JSON.stringify(invoice);
-    const response = await axios.post('https://api-m.sandbox.paypal.com/v2/invoicing/invoices', invoice, config);
-    console.log(response.data);
+    const response = await axios.post('https://api-m.paypal.com/v2/invoicing/invoices', invoice, config);
+    // console.log(response.data);
     return response.data.id;
 }
 
@@ -190,11 +195,11 @@ const config2 = {
   };
 
 async function sendInvoice(invoiceID){
-    const response = await axios.post(`https://api-m.sandbox.paypal.com/v2/invoicing/invoices/${invoiceID}/send`, 
+    const response = await axios.post(`https://api-m.paypal.com/v2/invoicing/invoices/${invoiceID}/send`, 
         JSON.stringify({ "send_to_invoicer": true }),
         config2
     );
-    console.log(response.data);
+    // console.log(response.data);
 }
 
 async function makeAndSendInvoice(name, address, total, fees){
@@ -205,18 +210,13 @@ async function makeAndSendInvoice(name, address, total, fees){
 
         }
         catch(error){
-            console.log(error);
-            console.log("Error in sending Invoice");
+            // console.log(error);
+            throw "Error in sending Invoice";
         }
     }
     catch(error){
-        console.log(error);
-        console.log("Error in Making Invoice");
+        // console.log(error);
+        throw "Error in Making Invoice";
     }
 }
-// makeInvoice();
-// sendInvoice();
-// makeAndSendInvoice("Chandan", "sb-eig47726976584@personal.example.com", "115.00", "3.00");
-authorize().then(billStudents).catch(console.error);
-
-// Fix up error handling (use throw statements to make sure error is logged)
+authorize().then(billStudents).then(() => {stream.end();}).catch(console.error);
